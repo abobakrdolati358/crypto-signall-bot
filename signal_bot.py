@@ -1,36 +1,3 @@
-import ccxt
-import pandas as pd
-import ta
-import time
-import schedule
-import requests
-import json
-import os
-
-# =============== تنظیمات ربات تلگرام ===============
-TOKEN = "8128166184:AAGYipsvRkKXiyXIF2H1eIIjYM4hplU47P8"
-CHAT_ID = "80150929"
-TELEGRAM_URL = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-POSITION_FILE = "positions.json"
-
-# =============== توابع تلگرام ===============
-def send_telegram_message(text):
-    payload = {"chat_id": CHAT_ID, "text": text}
-    requests.post(TELEGRAM_URL, data=payload)
-
-# =============== مدیریت فایل پوزیشن‌ها ===============
-def load_positions():
-    if not os.path.exists(POSITION_FILE):
-        with open(POSITION_FILE, "w") as f:
-            json.dump({}, f)
-    with open(POSITION_FILE, "r") as f:
-        return json.load(f)
-
-def save_positions(data):
-    with open(POSITION_FILE, "w") as f:
-        json.dump(data, f)
-
-# =============== تابع تحلیل اصلی ===============
 def analyze():
     exchange = ccxt.binance()
     markets = exchange.load_markets()
@@ -55,27 +22,38 @@ def analyze():
                 # سیگنال خرید
                 if latest["rsi"] < 30 and latest["ma50"] > latest["ma200"]:
                     if key not in positions:
-                        message += f"🟢 خرید: {symbol} | {timeframe} | RSI={latest['rsi']:.2f}\n"
-                        new_positions[key] = "open"
+                        entry_price = latest["close"]
+                        message += f"🟢 خرید: {symbol} | {timeframe} | ورود: {entry_price:.4f} | RSI={latest['rsi']:.2f}\n"
+                        new_positions[key] = {"status": "open", "entry_price": entry_price}
 
-                # سیگنال فروش
-                if key in positions:
+                # سیگنال فروش (یا بستن پوزیشن خرید)
+                if key in positions and isinstance(positions[key], dict):
                     if latest["rsi"] > 70 or latest["ma50"] < latest["ma200"]:
-                        message += f"🔴 فروش: {symbol} | {timeframe} | RSI={latest['rsi']:.2f}\n"
+                        entry_price = positions[key]["entry_price"]
+                        exit_price = latest["close"]
+                        growth = ((exit_price - entry_price) / entry_price) * 100
+                        message += f"🔴 فروش: {symbol} | {timeframe} | خروج: {exit_price:.4f} | رشد: {growth:.2f}%\n"
                         new_positions.pop(key)
+
+                # سیگنال شورت (فروش استقراضی)
+                short_key = f"short_{symbol}_{timeframe}"
+                if latest["rsi"] > 70 and latest["close"] > latest["ma50"] and latest["close"] < latest["ma200"]:
+                    if short_key not in positions:
+                        entry_price = latest["close"]
+                        message += f"📉 شورت: {symbol} | {timeframe} | ورود: {entry_price:.4f} | RSI={latest['rsi']:.2f}\n"
+                        new_positions[short_key] = {"status": "short", "entry_price": entry_price}
+
+                if short_key in positions and isinstance(positions[short_key], dict):
+                    if latest["rsi"] < 50:
+                        entry_price = positions[short_key]["entry_price"]
+                        exit_price = latest["close"]
+                        drop = ((entry_price - exit_price) / entry_price) * 100
+                        message += f"📈 بستن شورت: {symbol} | {timeframe} | خروج: {exit_price:.4f} | سود: {drop:.2f}%\n"
+                        new_positions.pop(short_key)
 
             except Exception as e:
                 print(f"⚠️ خطا در {symbol}: {e}")
 
     save_positions(new_positions)
     if message:
-        send_telegram_message("📈 سیگنال‌ها:\n" + message)
-
-# =============== زمان‌بندی اجرای خودکار ===============
-schedule.every(4).hours.do(analyze)
-schedule.every().day.at("09:00").do(analyze)
-
-print("🤖 ربات در حال اجراست... (خرید و فروش در همه رمزارزهای USDT)")
-while True:
-    schedule.run_pending()
-    time.sleep(60)
+        send_telegram_message("📊 سیگنال‌ها:\n" + message)
